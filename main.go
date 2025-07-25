@@ -156,18 +156,22 @@ func scrapeUser(users []string, intersect bool, ignore bool) (film, error) {
 	for {
 		userFilm := <-ch
 		if userFilm.done { //if users channel is don't then the scapre for that user has finished so decrease the user count
+			log.Printf("Received done signal, remaining users: %d", user-1)
 			user--
 			if user == 0 {
 				break
 			}
 		} else {
+			log.Printf("Received film: %s", userFilm.film.Name)
 			totalFilms = append(totalFilms, userFilm.film) //append feilm recieved over channel to list
 		}
 
 	}
 
 	//chose random film from list
+	log.Printf("Total films collected: %d", len(totalFilms))
 	if len(totalFilms) == 0 {
+		log.Printf("ERROR: No films found in totalFilms")
 		return film{}, &nothingError{reason: UNION}
 	}
 	log.Print("results")
@@ -207,44 +211,52 @@ func scrapeUser(users []string, intersect bool, ignore bool) (film, error) {
 //function to scapre an single user
 func scrape(userName string, ch chan filmSend) {
 	siteToVisit := site + "/" + userName + "/watchlist"
+	
+	log.Printf("Starting to scrape: %s", siteToVisit)
 
-	ajc := colly.NewCollector(
-		colly.Async(true),
-	)
-	ajc.OnHTML("div.film-poster", func(e *colly.HTMLElement) { //secondard cleector to get main data for film
-		name := e.Attr("data-film-name")
-		slug := e.Attr("data-target-link")
-		img := e.ChildAttr("img", "src")
-		year := e.Attr("data-film-release-year")
-		tempfilm := film{
-			Slug:  (site + slug),
-			Image: makeBigger(img),
-			Year: year,
-			Name:  name,
-		}
-		ch <- ok(tempfilm)
-	})
 	c := colly.NewCollector(
 		colly.Async(true),
 	)
 	c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: 100})
-	c.OnHTML(".poster-container", func(e *colly.HTMLElement) { //primary scarer to get url of each film that contian full information
-		e.ForEach("div.film-poster", func(i int, ein *colly.HTMLElement) {
-			slug := ein.Attr("data-film-slug")
-			ajc.Visit(url + slug + urlEnd) //start go routine to collect all film data
-		})
-
+	
+	// Extract film info directly from main page
+	c.OnHTML("div.film-poster", func(e *colly.HTMLElement) {
+		log.Printf("Found film poster element")
+		name := e.ChildAttr("img", "alt")  // Film name is in img alt attribute
+		slug := e.Attr("data-target-link") // Target link is available
+		img := e.ChildAttr("img", "src")   // Image (though it's placeholder)
+		
+		log.Printf("Extracted film: name=%s, slug=%s", name, slug)
+		
+		if name != "" && slug != "" {
+			tempfilm := film{
+				Slug:  (site + slug),
+				Image: makeBigger(img),
+				Year:  "", // Year not available on main page
+				Name:  name,
+			}
+			ch <- ok(tempfilm)
+		}
 	})
 	c.OnHTML("a[href]", func(e *colly.HTMLElement) {
 		link := e.Attr("href")
 		if strings.Contains(link, "watchlist/page") {
+			log.Printf("Found pagination link: %s", link)
 			e.Request.Visit(e.Request.AbsoluteURL(link))
 		}
 	})
 
+	c.OnRequest(func(r *colly.Request) {
+		log.Printf("Visiting: %s", r.URL.String())
+	})
+
+	c.OnError(func(r *colly.Response, err error) {
+		log.Printf("Error occurred: %s", err.Error())
+	})
+
 	c.Visit(siteToVisit)
 	c.Wait()
-	ajc.Wait()
+	log.Printf("Finished scraping user: %s", userName)
 	ch <- done() // users has finished so send done through channel
 
 }
@@ -262,33 +274,26 @@ func scrapeList(listnameIn string, ch chan filmSend) {
 	}
 	log.Println(siteToVisit)
 
-	ajc := colly.NewCollector(
-		colly.Async(true),
-	)
-	ajc.OnHTML("div.film-poster", func(e *colly.HTMLElement) {
-		name := e.Attr("data-film-name")
-		slug := e.Attr("data-target-link")
-		img := e.ChildAttr("img", "src")
-		year := e.Attr("data-film-release-year")
-		tempfilm := film{
-			Slug:  (site + slug),
-			Image: makeBigger(img),
-			Year: year,
-			Name:  name,
-		}
-		ch <- ok(tempfilm)
-	})
 	c := colly.NewCollector(
 		colly.Async(true),
 	)
-
 	c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: 100})
-	c.OnHTML(".poster-container", func(e *colly.HTMLElement) {
-		e.ForEach("div.film-poster", func(i int, ein *colly.HTMLElement) {
-			slug := ein.Attr("data-film-slug")
-			ajc.Visit(url + slug + urlEnd)
-		})
-
+	
+	// Extract film info directly from main page
+	c.OnHTML("div.film-poster", func(e *colly.HTMLElement) {
+		name := e.ChildAttr("img", "alt")  // Film name is in img alt attribute
+		slug := e.Attr("data-target-link") // Target link is available
+		img := e.ChildAttr("img", "src")   // Image (though it's placeholder)
+		
+		if name != "" && slug != "" {
+			tempfilm := film{
+				Slug:  (site + slug),
+				Image: makeBigger(img),
+				Year:  "", // Year not available on main page
+				Name:  name,
+			}
+			ch <- ok(tempfilm)
+		}
 	})
 	c.OnHTML("a[href]", func(e *colly.HTMLElement) {
 		link := e.Attr("href")
@@ -299,7 +304,6 @@ func scrapeList(listnameIn string, ch chan filmSend) {
 
 	c.Visit(siteToVisit)
 	c.Wait()
-	ajc.Wait()
 	ch <- done()
 
 }
